@@ -1,4 +1,4 @@
-# continuo-demo
+# continuo-demo-docs
 
 A reference **dbt producer** for [continuo](https://github.com/carolsimone/continuo)'s blue/green release pipeline. It owns several dbt services, builds their images, and drives a continuo release from CD — the worked example of how any consumer's CD integrates with continuo.
 
