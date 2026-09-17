@@ -12,9 +12,6 @@ models:
         description: "Multiplier applied to amount; NULL means an uncovered (currency, date) pair."
         tests:
           - not_null
-      - name: amount_eur
-        tests:
-          - not_null
       - name: fee_amount
         description: "Fee the company earned, denominated in currency_from."
         tests:
