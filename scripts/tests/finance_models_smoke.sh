@@ -102,7 +102,7 @@ SQL
 echo "== dbt seed (separate invocation, mirroring continuo's node-by-node orchestration) =="
 # fx_transactions_eur references its seed by raw name (analytics.seed_fx_rates_eur),
 # so dbt's DAG doesn't order the seed first. In production continuo drives each
-# node itself via wise-dbt verbs; the smoke mirrors that by seeding before build.
+# node itself via customname-dbt verbs; the smoke mirrors that by seeding before build.
 docker run --rm --network "$NET" \
   -e POSTGRES_HOST="$PG" -e POSTGRES_PORT=5432 \
   -e POSTGRES_DB=continuo_dbt -e POSTGRES_USER=continuo_svc -e POSTGRES_PASSWORD=runner \
