@@ -85,8 +85,8 @@ shellcheck scripts/release.sh
 # Python services: lint/validate/merge with continuo-runtime. Pinned exactly
 # (same pin as the release.yml/ci.yml install steps) — move this version only
 # alongside a deliberate runtime upgrade:
-uv tool install continuo-python-runtime==0.4.0 || \
-  uv tool install "git+https://github.com/carolsimone/continuo-python-runtime@v0.4.0"
+uv tool install continuo-python-runtime==0.7.0 || \
+  uv tool install "git+https://github.com/carolsimone/continuo-python-runtime@v0.7.0"
 continuo-runtime lint services/service-py/scripts/
 continuo-runtime validate services/service-py/contracts/ --dialect postgres
 continuo-runtime merge services/service-py/contracts/ --service service-py --repo-root services/service-py --dialect postgres --out /tmp/contract.yaml
