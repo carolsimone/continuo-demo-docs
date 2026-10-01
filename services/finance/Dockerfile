@@ -19,11 +19,12 @@ COPY models/ ./models/
 COPY seeds/ ./seeds/
 COPY tests/ ./tests/
 
-# Team "wise" dbt CLI: continuo drives finance through the dbt-commands.yaml
-# dialect (wise-dbt run-model / load-seed / capture-snapshot / test-model /
-# build-model / compile-project), which this translates to dbt-core invocations.
-COPY wise_dbt.py /usr/local/bin/wise-dbt
-RUN chmod +x /usr/local/bin/wise-dbt
+# Team CustomName's dbt CLI: continuo drives finance through the dbt-commands.yaml
+# dialect (customname-dbt run-model / rebuild-model / load-seed / reload-seed /
+# capture-snapshot / test-model / build-model / compile-project / parse-project).
+# wise-dbt is a transitional alias for dbt-commands.yaml configs that still name it.
+COPY customname_dbt.py /usr/local/bin/customname-dbt
+RUN chmod +x /usr/local/bin/customname-dbt && ln -s /usr/local/bin/customname-dbt /usr/local/bin/wise-dbt
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

@@ -77,8 +77,8 @@ jobs:
       # deliberate runtime upgrade.
       - name: Install continuo-python-runtime
         run: |
-          uv tool install continuo-python-runtime==0.4.0 || \
-            uv tool install "git+https://github.com/carolsimone/continuo-python-runtime@v0.4.0"
+          uv tool install continuo-python-runtime==0.7.0 || \
+            uv tool install "git+https://github.com/carolsimone/continuo-python-runtime@v0.7.0"
 
       - name: Lint python scripts (no hand-written SQL)
         run: continuo-runtime lint "services/${{ needs.check-single-service.outputs.service }}/scripts"
