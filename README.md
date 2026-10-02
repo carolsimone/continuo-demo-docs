@@ -68,11 +68,16 @@ This is the easiest integration mistake to make — even an automated fixer once
 
 ## Releasing manually
 
-This repo has no release workflow, so `scripts/release.sh` is run by hand with your own bearer token: set `CONTINUO_URL` to the origin of continuo's ui and `CONTINUO_TOKEN` to an OIDC ID token for a person with the operator role (continuo's `deploy/AUTH.md`, "Bearer tokens", shows how to get one from the bundled Dex). A person's token must send `repo` and `commit_sha`, so set `REPO` and `COMMIT_SHA` too.
+This repo has no release workflow, so `scripts/release.sh` is run by hand against your local continuo. Every call to continuo's release API carries a bearer token; here it is your own, an ID token the bundled Dex issues for the demo operator account. It lasts an hour, so request a new one when a call answers `401`. A person's token must send `repo` and `commit_sha`, so set `REPO` and `COMMIT_SHA` too.
 
 ```bash
-export CONTINUO_URL=http://localhost:8090   # kubectl -n continuo port-forward svc/ui 8090:8090
-export CONTINUO_TOKEN=<operator id token>
+kubectl -n continuo port-forward svc/ui 8090:8090 &
+kubectl -n continuo port-forward svc/continuo-dex 5556:5556 &
+CLIENT_SECRET=$(kubectl -n continuo get secret continuo-dex -o jsonpath='{.data.client-secret}' | base64 -d)
+export CONTINUO_TOKEN=$(curl -s -u "continuo-ui:${CLIENT_SECRET}" http://localhost:5556/dex/token \
+  -d grant_type=password -d scope="openid email profile" \
+  -d username=admin@example.com -d password=password | jq -r .id_token)
+export CONTINUO_URL=http://localhost:8090
 RELEASE_ID=rel-local-$(date +%s) SERVICE=service-3 IMAGE_TAG=<tag> \
   REPO=<owner>/<repo> COMMIT_SHA=$(git rev-parse HEAD) bash scripts/release.sh
 ```
