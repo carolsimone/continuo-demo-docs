@@ -1,8 +1,8 @@
 name: ci
 
-# continuo models a release as a SINGLE changed service (see release.yml), so a
-# PR touching more than one services/<svc>/ can never be released as-is. Catch
-# that at PR time instead of letting it land on main and fail release.yml.
+# continuo models a release as a SINGLE changed service (see continuo-demo's
+# release.yml, which this repo's services mirror), so a PR touching more than one
+# services/<svc>/ can never be released as-is. Catch that at PR time.
 on:
   pull_request:
     branches: [main]
@@ -49,17 +49,17 @@ jobs:
             SERVICE="$(printf '%s' "$CHANGED" | cut -d/ -f2)"
             # A service is python iff it declares contracts/ (a python-node
             # service directory); every other service is a dbt project. This
-            # mirrors release.yml's own detect job so a PR is checked the same
-            # way its eventual release would be.
+            # mirrors continuo-demo's release.yml detect job so a PR is checked
+            # the same way a release of it would be.
             if [ -d "services/${SERVICE}/contracts" ]; then KIND="python"; else KIND="dbt"; fi
             echo "service=${SERVICE}" >> "$GITHUB_OUTPUT"
             echo "kind=${KIND}" >> "$GITHUB_OUTPUT"
           fi
 
   # Python services skip dbt entirely, so nothing above exercises their
-  # contracts or scripts. Run the same gate release.yml runs before it ever
-  # builds an image, so a broken contract/script fails the PR instead of the
-  # push-to-main release.
+  # contracts or scripts. Run the same gate continuo-demo's release.yml runs
+  # before it builds an image, so a broken contract/script fails the PR instead
+  # of a release.
   python-checks:
     needs: check-single-service
     if: needs.check-single-service.outputs.kind == 'python'
@@ -74,9 +74,9 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
 
-      # Pinned deliberately, not left to float — same pin as release.yml's
-      # install step, for the same reason: this gate must judge a PR the same
-      # way the eventual release would. Move this pin only alongside a
+      # Pinned deliberately, not left to float — same pin as continuo-demo's
+      # release.yml install step, for the same reason: this gate must judge a PR
+      # the same way a release would. Move this pin only alongside a
       # deliberate runtime upgrade.
       - name: Install continuo-python-runtime
         run: |

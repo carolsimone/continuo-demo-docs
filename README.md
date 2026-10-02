@@ -1,6 +1,6 @@
 # continuo-demo-docs
 
-A reference **dbt producer** for [continuo](https://github.com/carolsimone/continuo)'s blue/green release pipeline. It owns several dbt services, builds their images, and drives a continuo release from CD — the worked example of how any consumer's CD integrates with continuo.
+A reference **dbt producer** for [continuo](https://github.com/carolsimone/continuo)'s blue/green release pipeline, and the project you fork to follow [Run your projects in continuo](https://continuo-data.com/docs/run-projects-in-continuo/) against a continuo running on your own machine: the ui at `http://localhost:8090`, the bundled MinIO as its object store. It owns several dbt services and a python service, builds their images, and drives a continuo release through continuo's public API.
 
 ## Reference implementation of the public "loading releases" interface
 
@@ -13,7 +13,7 @@ The authoritative contract is continuo's public `/api/v1` API (`POST /api/v1/rel
 Each service is either a **dbt project** (`dbt_project.yml`) or a **python-node service** (a `contracts/` directory instead — see `services/service-py/`). In [continuo-demo](https://github.com/carolsimone/continuo-demo), whose layout this repo shares, `.github/workflows/release.yml` runs the steps below on every push to `services/**` (or manual dispatch). This repo has no release workflow: only step 3, `scripts/release.sh`, exists here, and it is run manually (see [Releasing manually](#releasing-manually)). The workflow detects which kind the single changed service is and adapts:
 
 1. **Builds + pushes** the one changed service's image to Docker Hub as `<DOCKERHUB_USERNAME>/<service>:<short-sha>` (+ `:latest`), for both `linux/amd64` and `linux/arm64`. The name/tag is the contract: continuo's executor launches dbt jobs as `<DOCKERHUB_USERNAME>/<service_name>:<image_tag>`. Both architectures are built because the *pulling cluster* decides which one it needs, and a single-architecture image is unpullable everywhere else — an arm64 node rejects an amd64-only manifest with `no matching manifest for linux/arm64`, which is what an Apple Silicon laptop running a local cluster hits. Each service image is **self-contained** — there is no shared base image, so a single-service change rebuilds only that service. Validation runs in a continuo-owned image, so team images carry no validator.
-2. **Python services only**: before the image build, `continuo-runtime lint`/`validate`/`merge` (from [continuo-python-runtime](https://github.com/carolsimone/continuo-python-runtime)) lint the scripts, validate the contracts against the install's postgres dialect, and merge them into the wire `contract.yaml` continuo's manifest side recomputes hashes against. That file is uploaded to `s3://continuo-dev/<service>/<release_id>/contract.yaml` before the release is posted — continuo does no existence check, so the upload must land first.
+2. **Python services only**: before the image build, `continuo-runtime lint`/`validate`/`merge` (from [continuo-python-runtime](https://github.com/carolsimone/continuo-python-runtime)) lint the scripts, validate the contracts against the install's postgres dialect, and merge them into the wire `contract.yaml` continuo's manifest side recomputes hashes against. That file is uploaded to the install's object store at `<service>/<release_id>/contract.yaml` (on a local install, the bundled MinIO bucket `continuo`) before the release is posted — continuo does no existence check, so the upload must land first.
 3. **Drives the release** (`scripts/release.sh`): calls continuo's public API with a bearer token — reads `GET /api/v1/current-prod` to detect bootstrap, `POST`s the candidate to `/api/v1/releases`, then **polls `GET /api/v1/releases/{id}` to a terminal status — failing the deploy on `rejected` or `superseded`**. For a dbt service, continuo compiles the changed service and validates the full topology before promoting; for a python service, continuo parses the uploaded `contract.yaml` instead — there is no compile leg.
 
 Run manually, the bearer token is your own: set `CONTINUO_TOKEN` (see [Releasing manually](#releasing-manually)). A CD workflow such as continuo-demo's uses its GitHub Actions OIDC token instead: the release job sets `permissions: id-token: write`, `release.sh` requests a fresh token for each API call (they expire within minutes) with the origin of `CONTINUO_URL` as its audience, and the repository must be bound to the service in continuo's `ciAuth.bindings`.
@@ -68,11 +68,16 @@ This is the easiest integration mistake to make — even an automated fixer once
 
 ## Releasing manually
 
-This repo has no release workflow, so `scripts/release.sh` is run by hand with your own bearer token: set `CONTINUO_URL` to the origin of continuo's ui and `CONTINUO_TOKEN` to an OIDC ID token for a person with the operator role (continuo's `deploy/AUTH.md`, "Bearer tokens", shows how to get one from the bundled Dex). A person's token must send `repo` and `commit_sha`, so set `REPO` and `COMMIT_SHA` too.
+This repo has no release workflow, so `scripts/release.sh` is run by hand against your local continuo. Every call to continuo's release API carries a bearer token; here it is your own, an ID token the bundled Dex issues for the demo operator account. It lasts an hour, so request a new one when a call answers `401`. A person's token must send `repo` and `commit_sha`, so set `REPO` and `COMMIT_SHA` too.
 
 ```bash
-export CONTINUO_URL=http://localhost:8090   # kubectl -n continuo port-forward svc/ui 8090:8090
-export CONTINUO_TOKEN=<operator id token>
+kubectl -n continuo port-forward svc/ui 8090:8090 &
+kubectl -n continuo port-forward svc/continuo-dex 5556:5556 &
+CLIENT_SECRET=$(kubectl -n continuo get secret continuo-dex -o jsonpath='{.data.client-secret}' | base64 -d)
+export CONTINUO_TOKEN=$(curl -s -u "continuo-ui:${CLIENT_SECRET}" http://localhost:5556/dex/token \
+  -d grant_type=password -d scope="openid email profile" \
+  -d username=admin@example.com -d password=password | jq -r .id_token)
+export CONTINUO_URL=http://localhost:8090
 RELEASE_ID=rel-local-$(date +%s) SERVICE=service-3 IMAGE_TAG=<tag> \
   REPO=<owner>/<repo> COMMIT_SHA=$(git rev-parse HEAD) bash scripts/release.sh
 ```
@@ -85,7 +90,7 @@ An operator token may also bootstrap a service (`FORCE_BOOTSTRAP=true`, or autom
 shellcheck scripts/release.sh
 
 # release.sh against a stub of continuo's release API (needs curl and jq):
-uvx pytest scripts/tests/test_release_sh.py
+uvx pytest==9.1.1 scripts/tests/test_release_sh.py
 
 # Python services: lint/validate/merge with continuo-runtime. Pinned exactly
 # (same pin as the ci.yml install step) — move this version only
