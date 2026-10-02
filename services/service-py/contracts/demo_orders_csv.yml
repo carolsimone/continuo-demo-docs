@@ -11,7 +11,7 @@ nodes:
     criticality: SECONDARY
     kind: python-csv
     reads:
-      csv: s3://continuo-dev/static-files/demo/orders.csv
+      csv: s3://continuo/static-files/demo/orders.csv
     output_columns:
       - {name: order_id, type: INTEGER, nullable: false}
       - {name: customer, type: "VARCHAR(64)", nullable: true}
