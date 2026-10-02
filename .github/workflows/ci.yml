@@ -8,6 +8,9 @@ on:
     branches: [main]
     paths:
       - 'services/**'
+      - 'scripts/release.sh'
+      - 'scripts/tests/test_release_sh.py'
+      - '.github/workflows/ci.yml'
 
 jobs:
   check-single-service:
@@ -85,3 +88,23 @@ jobs:
 
       - name: Validate python contracts
         run: continuo-runtime validate "services/${{ needs.check-single-service.outputs.service }}/contracts" --dialect postgres
+
+  # release.sh is the only path from CD into continuo, so it is linted and
+  # exercised against a stub of continuo's release API on every change to it.
+  release-script:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Shellcheck release.sh
+        run: shellcheck scripts/release.sh
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Test release.sh
+        run: uvx pytest==9.1.1 scripts/tests/test_release_sh.py -v
