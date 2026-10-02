@@ -351,6 +351,40 @@ class ReleaseShTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("retrying in 1s", result.stderr)
 
+    def test_an_oversized_retry_after_is_capped_without_shell_errors(self):
+        limited = (429, {"error": "slow down", "code": "rate_limited"}, {"Retry-After": "9" * 30})
+        with _Stub(current_prod=[limited, (200, {"current_prod_release_id": "rel-0"})]) as stub:
+            result = _run_release(stub, {"POLL_TIMEOUT_SECONDS": "5"})
+
+        # The capped 60s wait does not fit the 5s budget, so the read fails.
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("rate_limited", result.stderr + result.stdout)
+        self.assertNotIn("integer expression expected", result.stderr)
+        self.assertEqual(len(stub.requests), 1)
+
+    def test_zero_padded_timing_values_are_read_as_decimal(self):
+        with _Stub() as stub:
+            result = _run_release(
+                stub,
+                {
+                    "POLL_TIMEOUT_SECONDS": "0900",
+                    "POLL_INTERVAL": "00",
+                    "RETRY_DELAY": "00",
+                    "RATE_LIMIT_DELAY": "08",
+                },
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertNotIn("value too great for base", result.stderr)
+
+    def test_an_overlong_timing_value_is_refused_locally(self):
+        with _Stub() as stub:
+            result = _run_release(stub, {"POLL_TIMEOUT_SECONDS": "1234567"})
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("POLL_TIMEOUT_SECONDS", result.stderr)
+        self.assertEqual(stub.requests, [])
+
     def test_a_stalled_connection_gives_up_within_the_budget(self):
         # A server that accepts the connection and never answers.
         server = socket.socket()
@@ -478,6 +512,17 @@ class ReleaseShTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("OIDC token", result.stderr)
         self.assertIn("promoted", result.stdout)
+
+    def test_oidc_429_honours_retry_after(self):
+        limited = (429, {"message": "slow down"}, {"Retry-After": "1"})
+        with _Stub(oidc=[limited, (200, None)]) as stub:
+            started = time.monotonic()
+            result = _run_release(stub, self._oidc_env(stub), drop_env=("CONTINUO_TOKEN",))
+            elapsed = time.monotonic() - started
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertIn("retrying in 1s", result.stderr)
+        self.assertGreaterEqual(elapsed, 1)
 
     def test_oidc_failure_mid_poll_counts_as_a_failed_poll(self):
         pending = (200, {"release_id": "rel-1", "status": "validating", "terminal": False})

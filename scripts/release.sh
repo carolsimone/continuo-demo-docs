@@ -77,6 +77,7 @@
 #                      (default 2)
 #   RATE_LIMIT_DELAY — seconds to wait before retrying a 429 when the answer
 #                      carries no Retry-After header (default 20)
+#   The four timing values are whole seconds, at most 6 digits, read as decimal.
 #
 # Every HTTP request has a 10 s connect timeout and a 30 s total timeout (less
 # when the budget has less left), so a stalled connection fails the attempt
@@ -119,11 +120,14 @@ BASE_URL="${CONTINUO_URL%/}"
 # The OIDC audience is the origin of CONTINUO_URL: scheme://host[:port], no path.
 AUDIENCE="$(printf '%s' "$BASE_URL" | sed -E 's|^(https?://[^/?#]+).*|\1|')"
 
+# Each timing value is at most six digits and is read as decimal, so a
+# zero-padded value such as 08 is eight seconds, not an invalid octal number.
 for var in POLL_TIMEOUT_SECONDS POLL_INTERVAL RETRY_DELAY RATE_LIMIT_DELAY; do
-  if ! [[ ${!var} =~ ^[0-9]+$ ]]; then
-    echo "ERROR: ${var} must be a whole number of seconds (got '${!var}')" >&2
+  if ! [[ ${!var} =~ ^[0-9]{1,6}$ ]]; then
+    echo "ERROR: ${var} must be a whole number of seconds, at most 6 digits (got '${!var}')" >&2
     exit 1
   fi
+  printf -v "$var" '%d' "$((10#${!var}))"
 done
 
 # A whole-string match: a value with a newline in it is refused.
@@ -250,14 +254,22 @@ fetch_token() {
 }
 
 # backoff STATUS ATTEMPT: seconds to wait before retry number ATTEMPT. A 429
-# waits for its Retry-After header (whole seconds, at most 60), or
-# RATE_LIMIT_DELAY without one; anything else waits RETRY_DELAY * ATTEMPT.
+# waits for its Retry-After header in whole seconds, at most 60, or
+# RATE_LIMIT_DELAY when the header is missing or not a number of seconds;
+# anything else waits RETRY_DELAY * ATTEMPT. HDR_FILE holds the headers of the
+# answer being retried, whether it came from continuo or the OIDC endpoint.
 backoff() {
   local delay=""
   if [ "$1" = "429" ]; then
     delay="$(tr -d '\r' <"$HDR_FILE" | awk 'tolower($1) == "retry-after:" {print $2; exit}')"
-    [[ $delay =~ ^[0-9]+$ ]] || delay="$RATE_LIMIT_DELAY"
-    [ "$delay" -le 60 ] || delay=60
+    if [[ $delay =~ ^[0-9]{1,3}$ ]]; then
+      delay=$((10#$delay))
+      [ "$delay" -le 60 ] || delay=60
+    elif [[ $delay =~ ^[0-9]+$ ]]; then
+      delay=60
+    else
+      delay="$RATE_LIMIT_DELAY"
+    fi
   else
     delay=$((RETRY_DELAY * $2))
   fi
@@ -272,7 +284,7 @@ backoff() {
 # token request) is retried, API_TRIES tries in all, but never past DEADLINE; once
 # retries run out API_TRANSIENT stays 1. Any other outcome returns at once.
 api() {
-  local method="$1" path="$2" body="${3:-}" attempt=1 rc delay
+  local method="$1" path="$2" body="${3:-}" attempt=1 rc delay retry_status
   local -a args
   while :; do
     API_TRANSIENT=0
@@ -293,14 +305,18 @@ api() {
       if ! is_transient; then
         return 0
       fi
+      retry_status="$HTTP_STATUS"
     else
+      # The token endpoint's status picks the backoff (a 429 there carries its
+      # own Retry-After); callers see 000, since continuo was never reached.
+      retry_status="$HTTP_STATUS"
       HTTP_STATUS="000"; HTTP_BODY=""
       if [ "$rc" -ne 1 ]; then
         return 0
       fi
     fi
     API_TRANSIENT=1
-    delay="$(backoff "$HTTP_STATUS" "$attempt")"
+    delay="$(backoff "$retry_status" "$attempt")"
     if [ "$attempt" -ge "$API_TRIES" ] || [ "$delay" -ge $((DEADLINE - SECONDS)) ]; then
       return 0
     fi
