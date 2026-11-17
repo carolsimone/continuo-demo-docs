@@ -49,16 +49,21 @@
 #   SERVICE          — the single changed service, e.g. service-3
 #   IMAGE_TAG        — that service's image tag: a dbt release passes the bare
 #                      short sha (continuo composes the pull ref itself); a
-#                      python release (KIND=python) passes the full pullable
-#                      registry ref, since continuo runs that verbatim.
+#                      python release (KIND=python-odcs or python) passes the
+#                      full pullable registry ref, since continuo runs that
+#                      verbatim.
 #
 # Optional:
 #   CONTINUO_TOKEN   — bearer token to use instead of the GitHub Actions OIDC
 #                      token (see Authentication).
-#   KIND             — "python" to mark this release as a python-node service
-#                      (adds "kind":"python" to the POST body). Any other
-#                      value, or leaving it unset, keeps the dbt behavior: no
-#                      "kind" field at all.
+#   KIND             — the kind of the service: "dbt" or unset for a dbt
+#                      project (the body carries no "kind" field);
+#                      "python-odcs" for a python-node service whose contracts
+#                      are contracts/*.odcs.yaml files, with odcs-bundle.json
+#                      uploaded to <service>/<release_id>/ first; "python" for
+#                      one still on a single contract.yaml. Both python kinds
+#                      are sent as "kind" in the body. Any other value stops
+#                      the script before any request.
 #   REPO             — "<owner>/<repo>" sent as "repo" (see Authentication).
 #   COMMIT_SHA       — full commit sha sent as "commit_sha".
 #   FORCE_BOOTSTRAP  — "true" to promote without validation regardless of
@@ -86,8 +91,12 @@
 # token request, and HTTP 429, 502, 503 and 504. Any other curl error, and any
 # other HTTP status, ends the run at once.
 #
+# A rejected release prints reject_reason, reject_detail and continuo_contracts,
+# the version of the contract library that read a python release's contracts
+# (empty for a dbt release).
+#
 # Exit status: 0 when the release is promoted; 1 on a rejected or superseded
-# release, an API error, or a poll timeout.
+# release, an API error, or a poll timeout; 2 on an unknown KIND.
 
 set -euo pipefail
 
@@ -107,6 +116,11 @@ RATE_LIMIT_DELAY="${RATE_LIMIT_DELAY:-20}"
 API_TRIES=4
 CONNECT_TIMEOUT=10
 MAX_TIME=30
+
+case "$KIND" in
+  "" | dbt | python | python-odcs) ;;
+  *) echo "release.sh: unknown KIND \"${KIND}\": expected dbt, python or python-odcs" >&2; exit 2 ;;
+esac
 
 for tool in curl jq; do
   command -v "$tool" >/dev/null 2>&1 || { echo "ERROR: $tool is required but not installed" >&2; exit 1; }
@@ -388,7 +402,7 @@ BODY="$(jq -n \
   --arg repo "$REPO" \
   --arg commit_sha "$COMMIT_SHA" \
   '{release_id: $release_id, service: $service, image_tag: $image_tag, bootstrap: $bootstrap}
-   + (if $kind == "python" then {kind: "python"} else {} end)
+   + (if ($kind == "python" or $kind == "python-odcs") then {kind: $kind} else {} end)
    + (if $repo != "" then {repo: $repo} else {} end)
    + (if $commit_sha != "" then {commit_sha: $commit_sha} else {} end)')"
 echo "POST /api/v1/releases ${BODY}"
@@ -432,6 +446,7 @@ while [ $((DEADLINE - SECONDS)) -gt 0 ]; do
         echo "release ${RELEASE_ID} rejected" >&2
         echo "reject_reason: $(jq -r '.reject_reason // empty' <<<"$HTTP_BODY")" >&2
         echo "reject_detail: $(jq -r '.reject_detail // empty' <<<"$HTTP_BODY")" >&2
+        echo "continuo_contracts: $(jq -r '.continuo_contracts // empty' <<<"$HTTP_BODY")" >&2
         [ -z "$UI_URL" ] || echo "details: ${UI_URL}" >&2
         exit 1
         ;;

@@ -203,6 +203,72 @@ class ReleaseShTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertEqual(json.loads(stub.posts()[0][3])["kind"], "python")
 
+    def test_python_odcs_kind_adds_kind_to_the_body(self):
+        with _Stub() as stub:
+            result = _run_release(stub, {"KIND": "python-odcs", "IMAGE_TAG": "service-py:v1"})
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        body = json.loads(stub.posts()[0][3])
+        self.assertEqual(body["kind"], "python-odcs")
+        self.assertEqual(body["image_tag"], "service-py:v1")
+
+    def test_python_odcs_bootstrap_keeps_the_kind(self):
+        with _Stub() as stub:
+            result = _run_release(stub, {"KIND": "python-odcs", "FORCE_BOOTSTRAP": "true"})
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        body = json.loads(stub.posts()[0][3])
+        self.assertEqual(body["kind"], "python-odcs")
+        self.assertTrue(body["bootstrap"])
+
+    def test_dbt_kind_sends_no_kind(self):
+        with _Stub() as stub:
+            result = _run_release(stub, {"KIND": "dbt"})
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertNotIn("kind", json.loads(stub.posts()[0][3]))
+
+    def test_an_unknown_kind_stops_the_script(self):
+        for kind in ["odcs", "python_odcs", "Python-ODCS"]:
+            with self.subTest(kind=kind), _Stub() as stub:
+                result = _run_release(stub, {"KIND": kind})
+
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(
+                    f'release.sh: unknown KIND "{kind}": expected dbt, python or python-odcs',
+                    result.stderr,
+                )
+                self.assertEqual(stub.requests, [])
+
+    def test_a_rejected_release_prints_the_contracts_version(self):
+        rejected = {
+            "release_id": "rel-1",
+            "status": "rejected",
+            "terminal": True,
+            "reject_reason": "invalid_contract",
+            "reject_detail": "analytics.py_daily_kpis: schema[0].properties: at least one column",
+            "continuo_contracts": "0.2.0",
+        }
+        with _Stub(polls=[(200, rejected)]) as stub:
+            result = _run_release(stub, {"KIND": "python-odcs"})
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("reject_reason: invalid_contract", result.stderr)
+        self.assertIn("continuo_contracts: 0.2.0", result.stderr)
+
+    def test_a_rejection_without_a_contracts_version_prints_the_line_empty(self):
+        rejected = {
+            "release_id": "rel-1",
+            "status": "rejected",
+            "terminal": True,
+            "reject_reason": "validation_failed",
+        }
+        with _Stub(polls=[(200, rejected)]) as stub:
+            result = _run_release(stub)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("continuo_contracts: \n", result.stderr)
+
     def test_unseeded_prod_bootstraps(self):
         with _Stub(current_prod=(200, {"current_prod_release_id": ""})) as stub:
             result = _run_release(stub)
