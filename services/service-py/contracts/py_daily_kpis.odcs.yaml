@@ -1,0 +1,24 @@
+apiVersion: v3.2.0
+kind: DataContract
+id: analytics.py_daily_kpis
+name: py_daily_kpis
+version: "0"        # continuo numbers published versions itself; this value is ignored
+description:
+  purpose: Daily transaction count and total amount in EUR, rolled up from analytics.daily_transactions.
+team:
+  name: service-py
+customProperties:
+  - {vendor: continuo, property: schedule, value: daily}
+  - {vendor: continuo, property: criticality, value: SECONDARY}
+  - {vendor: continuo, property: script, value: scripts/py_daily_kpis.py}
+  - vendor: continuo
+    property: readQueries
+    value:
+      daily: select created_at, amount_eur from analytics.daily_transactions
+schema:
+  - name: py_daily_kpis
+    physicalType: table
+    properties:
+      - {name: day, physicalType: DATE, required: true}
+      - {name: tx_count, physicalType: INTEGER, required: true}
+      - {name: total_amount, physicalType: "NUMERIC(12,2)", required: true}
