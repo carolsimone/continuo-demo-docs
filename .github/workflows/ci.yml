@@ -48,46 +48,82 @@ jobs:
           if [ "$COUNT" -eq 1 ]; then
             SERVICE="$(printf '%s' "$CHANGED" | cut -d/ -f2)"
             # A service is python iff it declares contracts/ (a python-node
-            # service directory); every other service is a dbt project. This
-            # mirrors continuo-demo's release.yml detect job so a PR is checked
-            # the same way a release of it would be.
-            if [ -d "services/${SERVICE}/contracts" ]; then KIND="python"; else KIND="dbt"; fi
+            # service directory); every other service is a dbt project. A
+            # python service writes one ODCS contract per node, as
+            # contracts/<table>.odcs.yaml, and is released with the kind
+            # python-odcs. A contracts/ directory without such a file is the
+            # old contract.yaml layout, which this repository no longer uses.
+            if compgen -G "services/${SERVICE}/contracts/*.odcs.yaml" > /dev/null; then
+              KIND="python-odcs"
+            elif [ -d "services/${SERVICE}/contracts" ]; then
+              echo "::error::services/${SERVICE}/contracts holds no .odcs.yaml file: write one ODCS contract per node, as contracts/<table>.odcs.yaml"
+              exit 1
+            else
+              KIND="dbt"
+            fi
             echo "service=${SERVICE}" >> "$GITHUB_OUTPUT"
             echo "kind=${KIND}" >> "$GITHUB_OUTPUT"
           fi
 
   # Python services skip dbt entirely, so nothing above exercises their
-  # contracts or scripts. Run the same gate continuo-demo's release.yml runs
-  # before it builds an image, so a broken contract/script fails the PR instead
-  # of a release.
+  # contracts or scripts. Run the steps a release of the service runs before
+  # it uploads odcs-bundle.json: lint, validate, build the image and pack the
+  # contracts against it. A broken contract, script or image fails the PR
+  # instead of a release.
   python-checks:
     needs: check-single-service
-    if: needs.check-single-service.outputs.kind == 'python'
+    if: needs.check-single-service.outputs.kind == 'python-odcs'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     permissions:
       contents: read
+    env:
+      SERVICE: ${{ needs.check-single-service.outputs.service }}
+      # The runtime that checks and packs the contracts must be the one the
+      # service image runs: the harness checks the image against the released
+      # content hash when a node starts. Move this pin only together with the
+      # FROM line of the service's Dockerfile; the first step below fails
+      # when the two differ.
+      RUNTIME_VERSION: "0.13.0"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check the image base is the pinned runtime
+        run: |
+          if ! grep -Eq "^FROM ghcr\.io/carolsimone/continuo-python-runtime-[a-z]+:v${RUNTIME_VERSION//./\\.}\$" "services/${SERVICE}/Dockerfile"; then
+            echo "::error::services/${SERVICE}/Dockerfile must build FROM ghcr.io/carolsimone/continuo-python-runtime-<engine>:v${RUNTIME_VERSION}, the runtime CI checks the contracts with"
+            exit 1
+          fi
+
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
 
-      # Pinned deliberately, not left to float — same pin as continuo-demo's
-      # release.yml install step, for the same reason: this gate must judge a PR
-      # the same way a release would. Move this pin only alongside a
-      # deliberate runtime upgrade.
       - name: Install continuo-python-runtime
         run: |
-          uv tool install continuo-python-runtime==0.7.0 || \
-            uv tool install "git+https://github.com/carolsimone/continuo-python-runtime@v0.7.0"
+          uv tool install "continuo-python-runtime==${RUNTIME_VERSION}" || \
+            uv tool install "git+https://github.com/carolsimone/continuo-python-runtime@v${RUNTIME_VERSION}"
 
       - name: Lint python scripts (no hand-written SQL)
-        run: continuo-runtime lint "services/${{ needs.check-single-service.outputs.service }}/scripts"
+        run: continuo-runtime lint "services/${SERVICE}/scripts"
 
       - name: Validate python contracts
-        run: continuo-runtime validate "services/${{ needs.check-single-service.outputs.service }}/contracts" --dialect postgres
+        run: continuo-runtime validate "services/${SERVICE}/contracts" --dialect postgres
+
+      - name: Build the service image
+        run: docker build -t "${SERVICE}:ci" "services/${SERVICE}"
+
+      # The same pack a release runs. It checks the contracts again, lints the
+      # scripts and reads the image's package list with docker run. The bundle
+      # stays on the runner: a PR releases nothing.
+      - name: Pack the contracts
+        run: |
+          continuo-runtime pack "services/${SERVICE}/contracts" \
+            --service "${SERVICE}" \
+            --repo-root "services/${SERVICE}" \
+            --image "${SERVICE}:ci" \
+            --dialect postgres \
+            --out "${RUNNER_TEMP}/odcs-bundle.json"
 
   # release.sh is the only path from CD into continuo, so it is linted and
   # exercised against a stub of continuo's release API on every change to it.

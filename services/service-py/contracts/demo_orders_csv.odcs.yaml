@@ -1,0 +1,21 @@
+apiVersion: v3.2.0
+kind: DataContract
+id: analytics.demo_orders_csv
+name: demo_orders_csv
+version: "0"
+description:
+  purpose: "Contract-only csv node: loads the demo orders export from object storage"
+team:
+  name: service-py
+customProperties:
+  - {vendor: continuo, property: kind, value: python-csv}
+  - {vendor: continuo, property: schedule, value: daily}
+  - {vendor: continuo, property: criticality, value: SECONDARY}
+  - {vendor: continuo, property: csvSource, value: "s3://continuo/static-files/demo/orders.csv"}
+schema:
+  - name: demo_orders_csv
+    physicalType: table
+    properties:
+      - {name: order_id, physicalType: INTEGER, required: true}
+      - {name: customer, physicalType: "VARCHAR(64)"}
+      - {name: amount, physicalType: DOUBLE PRECISION}

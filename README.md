@@ -10,11 +10,11 @@ The authoritative contract is continuo's public `/api/v1` API (`POST /api/v1/rel
 
 ## What it does
 
-Each service is either a **dbt project** (`dbt_project.yml`) or a **python-node service** (a `contracts/` directory instead — see `services/service-py/`). In [continuo-demo](https://github.com/carolsimone/continuo-demo), whose layout this repo shares, `.github/workflows/release.yml` runs the steps below on every push to `services/**` (or manual dispatch). This repo has no release workflow: only step 3, `scripts/release.sh`, exists here, and it is run manually (see [Releasing manually](#releasing-manually)). The workflow detects which kind the single changed service is and adapts:
+Each service is either a **dbt project** (`dbt_project.yml`) or a **python-node service** (a `contracts/` directory of `.odcs.yaml` files instead — see `services/service-py/`). In [continuo-demo](https://github.com/carolsimone/continuo-demo), whose layout this repo shares, `.github/workflows/release.yml` runs the steps below on every push to `services/**` (or manual dispatch). This repo has no release workflow: only step 3, `scripts/release.sh`, exists here, and it is run manually (see [Releasing manually](#releasing-manually)). The workflow detects which kind the single changed service is and adapts:
 
 1. **Builds + pushes** the one changed service's image to Docker Hub as `<DOCKERHUB_USERNAME>/<service>:<short-sha>` (+ `:latest`), for both `linux/amd64` and `linux/arm64`. The name/tag is the contract: continuo's executor launches dbt jobs as `<DOCKERHUB_USERNAME>/<service_name>:<image_tag>`. Both architectures are built because the *pulling cluster* decides which one it needs, and a single-architecture image is unpullable everywhere else — an arm64 node rejects an amd64-only manifest with `no matching manifest for linux/arm64`, which is what an Apple Silicon laptop running a local cluster hits. Each service image is **self-contained** — there is no shared base image, so a single-service change rebuilds only that service. Validation runs in a continuo-owned image, so team images carry no validator.
-2. **Python services only**: before the image build, `continuo-runtime lint`/`validate`/`merge` (from [continuo-python-runtime](https://github.com/carolsimone/continuo-python-runtime)) lint the scripts, validate the contracts against the install's postgres dialect, and merge them into the wire `contract.yaml` continuo's manifest side recomputes hashes against. That file is uploaded to the install's object store at `<service>/<release_id>/contract.yaml` (on a local install, the bundled MinIO bucket `continuo`) before the release is posted — continuo does no existence check, so the upload must land first.
-3. **Drives the release** (`scripts/release.sh`): calls continuo's public API with a bearer token — reads `GET /api/v1/current-prod` to detect bootstrap, `POST`s the candidate to `/api/v1/releases`, then **polls `GET /api/v1/releases/{id}` to a terminal status — failing the deploy on `rejected` or `superseded`**. For a dbt service, continuo compiles the changed service and validates the full topology before promoting; for a python service, continuo parses the uploaded `contract.yaml` instead — there is no compile leg.
+2. **Python services only**: `continuo-runtime` (from [continuo-python-runtime](https://github.com/carolsimone/continuo-python-runtime)) lints the scripts and validates the contracts against the install's postgres dialect before the image build. After the build, `continuo-runtime pack` checks the contracts again and writes `odcs-bundle.json`: the text of each contract and the packages the image holds. The bundle is uploaded to the install's object store at `<service>/<release_id>/odcs-bundle.json` (on a local install, the bundled MinIO bucket `continuo`) before the release is posted. continuo does no existence check, so the upload must land first.
+3. **Drives the release** (`scripts/release.sh`): calls continuo's public API with a bearer token — reads `GET /api/v1/current-prod` to detect bootstrap, `POST`s the candidate to `/api/v1/releases`, then **polls `GET /api/v1/releases/{id}` to a terminal status — failing the deploy on `rejected` or `superseded`**. For a dbt service, continuo compiles the changed service and validates the full topology before promoting; for a python service, continuo reads the uploaded `odcs-bundle.json` instead — there is no compile leg.
 
 Run manually, the bearer token is your own: set `CONTINUO_TOKEN` (see [Releasing manually](#releasing-manually)). A CD workflow such as continuo-demo's uses its GitHub Actions OIDC token instead: the release job sets `permissions: id-token: write`, `release.sh` requests a fresh token for each API call (they expire within minutes) with the origin of `CONTINUO_URL` as its audience, and the repository must be bound to the service in continuo's `ciAuth.bindings`.
 
@@ -26,15 +26,15 @@ continuo models a release as a **single changed service**. The request body is:
 {"release_id": "rel-<sha>-<run>", "service": "service-3", "image_tag": "<sha>", "bootstrap": false, "repo": "<owner>/<repo>", "commit_sha": "<full-sha>"}
 ```
 
-For a python service the body gains one field, and `image_tag` is a full pullable registry ref rather than a bare tag (continuo runs a python `image_tag` verbatim; a dbt `image_tag` is composed into a pull ref by continuo itself):
+For a python service the body gains one field, `"kind": "python-odcs"`, and `image_tag` is a full pullable registry ref rather than a bare tag (continuo runs a python `image_tag` verbatim; a dbt `image_tag` is composed into a pull ref by continuo itself):
 
 ```json
-{"release_id": "rel-<sha>-<run>", "service": "service-py", "image_tag": "docker.io/<user>/service-py:<sha>", "bootstrap": false, "repo": "<owner>/<repo>", "commit_sha": "<full-sha>", "kind": "python"}
+{"release_id": "rel-<sha>-<run>", "service": "service-py", "image_tag": "docker.io/<user>/service-py:<sha>", "bootstrap": false, "repo": "<owner>/<repo>", "commit_sha": "<full-sha>", "kind": "python-odcs"}
 ```
 
 - `service` and `image_tag` are **single values**, not maps. `repo` and `commit_sha` identify the source push (`github.repository` / `github.sha`). For a CI token continuo takes both from the token, so they must equal the token's values or be omitted (a different value is a `403` `claim_mismatch`); a person calling with their own token must send both. There is **no `service_metadata.json` sidecar** for dbt services; the image tag travels in this body, not in S3.
 - continuo replies `202 Accepted` with `{"release_id": "...", "status": "..."}`.
-- The script then polls `GET /api/v1/releases/<release_id>` until `terminal` is true: `promoted` (success), `rejected` (failure; `reject_reason` and `reject_detail` say why) or `superseded` (failure). Every answer carries `ui_url`, the release's page in the dashboard. For a dbt release continuo reconstructs the full manifest set via the live `service_prod` pointers, with manifests produced by continuo's internal compile leg. For a python release it reads the `contract.yaml` already uploaded to S3 (step 2 above).
+- The script then polls `GET /api/v1/releases/<release_id>` until `terminal` is true: `promoted` (success), `rejected` (failure; `reject_reason` and `reject_detail` say why, and `continuo_contracts` names the version of the contract library that read a python release's contracts) or `superseded` (failure). Every answer carries `ui_url`, the release's page in the dashboard. For a dbt release continuo reconstructs the full manifest set via the live `service_prod` pointers, with manifests produced by continuo's internal compile leg. For a python release it reads the `odcs-bundle.json` already uploaded to S3 (step 2 above).
 
 ### First run = bootstrap
 
@@ -46,13 +46,15 @@ For a python service the body gains one field, and `image_tag` is a full pullabl
 services/        # one directory per service.
                  #   dbt service: dbt_project.yml, profiles.yml (schema: analytics),
                  #     macros/ (generate_schema_name), models/, seeds/, Dockerfile (plain dbt + project)
-                 #   python-node service: contracts/*.yml, scripts/*.py, Dockerfile
-                 #     (FROM ghcr.io/carolsimone/continuo-python-runtime:<tag>)
+                 #   python-node service: contracts/<table>.odcs.yaml (one ODCS contract
+                 #     per node), scripts/*.py, Dockerfile
+                 #     (FROM ghcr.io/carolsimone/continuo-python-runtime-postgres:v0.13.0)
 scripts/         # repo CD/utility tooling: release.sh, gen_users.py, gen_transactions.py,
                  #   gen_fx_rates_eur.py, gen_marketing_spend.py, gen_operational_costs.py
                  #   Seed generators are ordered: gen_users -> {gen_marketing_spend,
                  #   gen_transactions -> gen_fx_rates_eur}; gen_operational_costs is independent.
-.github/workflows/   # ci.yml (PR checks, shellcheck and tests for release.sh)
+.github/workflows/   # ci.yml (PR checks: one service per PR, python lint/validate/build/pack,
+                     #   shellcheck and tests for release.sh)
 ```
 
 The services fall into three groups. `core`, `finance`, and `marketing` are clean dbt example workloads — the part to read if you're modelling how your own dbt producer integrates. `service-1`, `service-2`, and `service-3` are copied from continuo's e2e fixtures: they carry deliberate cross-service dependencies (including a service-2 ↔ service-3 cycle) and probe / failure nodes whose only purpose is to exercise continuo's validation and reject paths. They are testing scaffolding, not a modelling example. `service-py` is the reference **python-node** service — `analytics.py_daily_kpis` reads `core`'s `analytics.daily_transactions` table and rolls it up into a daily count/total, and `analytics.demo_orders_csv` is a contract-only `python-csv` node that loads a demo CSV export straight from object storage (no script), the worked example of integrating a python producer instead of a dbt one. All services materialize into the **`analytics`** schema.
@@ -82,6 +84,18 @@ RELEASE_ID=rel-local-$(date +%s) SERVICE=service-3 IMAGE_TAG=<tag> \
   REPO=<owner>/<repo> COMMIT_SHA=$(git rev-parse HEAD) bash scripts/release.sh
 ```
 
+A python service is released the same way, with `KIND=python-odcs` and the full image reference as `IMAGE_TAG`. Pack and upload its bundle under the same release id first (see [Local checks](#local-checks) for `pack`):
+
+```bash
+RELEASE_ID=rel-local-$(date +%s)
+aws --endpoint-url http://localhost:9000 \
+  s3 cp /tmp/odcs-bundle.json "s3://continuo/service-py/${RELEASE_ID}/odcs-bundle.json"
+RELEASE_ID=$RELEASE_ID SERVICE=service-py IMAGE_TAG=service-py:v1 KIND=python-odcs \
+  REPO=<owner>/<repo> COMMIT_SHA=$(git rev-parse HEAD) bash scripts/release.sh
+```
+
+`KIND` takes `dbt` (or nothing), `python-odcs` or `python`. Any other value stops the script with exit code 2.
+
 An operator token may also bootstrap a service (`FORCE_BOOTSTRAP=true`, or automatically against an unseeded production).
 
 ## Local checks
@@ -92,14 +106,17 @@ shellcheck scripts/release.sh
 # release.sh against a stub of continuo's release API (needs curl and jq):
 uvx pytest==9.1.1 scripts/tests/test_release_sh.py
 
-# Python services: lint/validate/merge with continuo-runtime. Pinned exactly
-# (same pin as the ci.yml install step) — move this version only
-# alongside a deliberate runtime upgrade:
-uv tool install continuo-python-runtime==0.7.0 || \
-  uv tool install "git+https://github.com/carolsimone/continuo-python-runtime@v0.7.0"
+# Python services: lint, validate and pack with continuo-runtime. Pinned exactly
+# (the same pin as ci.yml, and the same runtime as the FROM line of
+# services/service-py/Dockerfile) — move all three together:
+uv tool install continuo-python-runtime==0.13.0 || \
+  uv tool install "git+https://github.com/carolsimone/continuo-python-runtime@v0.13.0"
 continuo-runtime lint services/service-py/scripts/
-continuo-runtime validate services/service-py/contracts/ --dialect postgres
-continuo-runtime merge services/service-py/contracts/ --service service-py --repo-root services/service-py --dialect postgres --out /tmp/contract.yaml
+continuo-runtime validate services/service-py/contracts --dialect postgres
+docker build -t service-py:v1 services/service-py
+continuo-runtime pack services/service-py/contracts --service service-py \
+  --repo-root services/service-py --image service-py:v1 --dialect postgres \
+  --out /tmp/odcs-bundle.json
 ```
 
 ## License
